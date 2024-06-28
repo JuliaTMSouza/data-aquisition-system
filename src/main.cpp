@@ -3,34 +3,61 @@
 #include <memory>
 #include <utility>
 #include <boost/asio.hpp>
-#include <vector>
 #include <boost/algorithm/string.hpp>
+#include <fstream>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 
 using boost::asio::ip::tcp;
 
-std::vector<Sensor> sensores;
-int counter = 0;
+std::string time_t_to_string(std::time_t time) {
+    std::tm* tm = std::localtime(&time);
+    std::ostringstream ss;
+    ss << std::put_time(tm, "%Y-%m-%dT%H:%M:%S");
+    return ss.str();
+}
 
-class Sensor {
+std::time_t string_to_time_t(const std::string& time_string) {
+    std::tm tm = {};
+    std::istringstream ss(time_string);
+    ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+    return std::mktime(&tm);
+}
+
+#pragma pack(push, 1)
+struct LogRecord {
+    std::string sensor_id; // supondo um ID de sensor de até 32 caracteres
+    std::time_t timestamp; // timestamp UNIX
+    double value; // valor da leitura
+};
+#pragma pack(pop)
+
+class Sensor
+{
 public:
-    Sensor(tcp::socket& socket, const std::string& file_path)
-        : socket_(std::move(socket)),
-          file_path_(file_path)
-    {
-    }
+  Sensor(std::string sensor_id, const std::string &file_path)
+      : sensor_id_(sensor_id),
+        file_path_(file_path)
+  {
+  }
 
-    tcp::socket& getSocket() {
-        return socket_;
-    }
+  std::string getSensor_id()
+  {
+    return sensor_id_;
+  }
 
-    const std::string& getFilePath() const {
-        return file_path_;
-    }
+  const std::string &getFilePath() const
+  {
+    return file_path_;
+  }
 
 private:
-    tcp::socket socket_;
-    std::string file_path_;
+  std::string sensor_id_;
+  std::string file_path_;
 };
+
+std::vector<Sensor> sensores;
 
 class session
   : public std::enable_shared_from_this<session>
@@ -43,10 +70,6 @@ public:
 
   void start()
   {
-    std::string  path_name = counter + ".txt";
-    std::string& file_path = path_name;
-    Sensor newSensor = Sensor(this->socket_, file_path);
-    counter++;
     read_message();
   }
 
@@ -62,20 +85,40 @@ private:
             std::istream is(&buffer_);
             std::string message(std::istreambuf_iterator<char>(is), {});
             std::cout << "Received: " << message << std::endl;
-            std::vector<std::string> splitedMessage;
-            boost::algorithm::split(splitedMessage, message, boost::is_any_of(","));
 
-            if (splitedMessage[0] == "LOG") {
-                 
-            } else if (splitedMessage[0] == "GET") {
-                
-            }
-            write_message(message);
-            for (int i = 0; i < sensores.size(); i++) {
-                if (sensores[i].getSocket() == std::move(socket_)) {
-                    std::cout << "true" << " | " << sensores[i].getSocket() << std::endl;
-                    
-                }
+             std::vector<std::string> splitedMessage;
+            boost::algorithm::split(splitedMessage, message, boost::is_any_of("|"));
+
+            std::string messageType = splitedMessage[0];
+            std::string sensor_id = splitedMessage[1];
+            std::string filepath = sensor_id + ".txt";
+            std::string timeDate = splitedMessage[2];
+            std::string data = splitedMessage[3];
+
+            // write_message(message);
+ 
+            if (messageType == "LOG") {
+              std::fstream file(filepath, std::fstream::out | std::fstream::in | std::fstream::binary 
+																	 | std::fstream::app); 
+              if (file.is_open()) {
+
+		            // Recupera o número de registros presentes no arquivo
+
+		            // Escreve o registro no arquivo
+		            std::cout << "Escrevendo o registro..." << std::endl;
+
+			          LogRecord rec;
+			          rec.sensor_id = sensor_id;
+                rec.timestamp = string_to_time_t(timeDate);
+                rec.value = std::stof(data);
+			          file.write((char*)&rec, sizeof(LogRecord));
+                std::cout << "Registro escrito" << std::endl; 
+
+                // LogRecord recRead;
+                // file.read((char*)&recRead, sizeof(LogRecord));
+                // std::cout << "Registro lido: id) " << recRead.sensor_id << " valor) " << recRead.value << std::endl; 
+                // std::cout << time_t_to_string(recRead.timestamp) << std::endl;
+              }
             }
           }
         });
