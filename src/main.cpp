@@ -8,65 +8,41 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <vector>
 
 using boost::asio::ip::tcp;
 
-std::string time_t_to_string(std::time_t time) {
-    std::tm* tm = std::localtime(&time);
-    std::ostringstream ss;
-    ss << std::put_time(tm, "%Y-%m-%dT%H:%M:%S");
-    return ss.str();
+std::string time_t_to_string(std::time_t time)
+{
+  std::tm *tm = std::localtime(&time);
+  std::ostringstream ss;
+  ss << std::put_time(tm, "%Y-%m-%dT%H:%M:%S");
+  return ss.str();
 }
 
-std::time_t string_to_time_t(const std::string& time_string) {
-    std::tm tm = {};
-    std::istringstream ss(time_string);
-    ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
-    return std::mktime(&tm);
+std::time_t string_to_time_t(const std::string &time_string)
+{
+  std::tm tm = {};
+  std::istringstream ss(time_string);
+  ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+  return std::mktime(&tm);
 }
 
 #pragma pack(push, 1)
-struct LogRecord {
-    std::string sensor_id; // supondo um ID de sensor de até 32 caracteres
-    std::time_t timestamp; // timestamp UNIX
-    double value; // valor da leitura
+struct LogRecord
+{
+  char sensor_id[32];    // supondo um ID de sensor de até 32 caracteres
+  std::time_t timestamp; // timestamp UNIX
+  double value;          // valor da leitura
 };
 #pragma pack(pop)
 
-class Sensor
-{
-public:
-  Sensor(std::string sensor_id, const std::string &file_path)
-      : sensor_id_(sensor_id),
-        file_path_(file_path)
-  {
-  }
-
-  std::string getSensor_id()
-  {
-    return sensor_id_;
-  }
-
-  const std::string &getFilePath() const
-  {
-    return file_path_;
-  }
-
-private:
-  std::string sensor_id_;
-  std::string file_path_;
-};
-
-std::vector<Sensor> sensores;
-
 class session
-  : public std::enable_shared_from_this<session>
+    : public std::enable_shared_from_this<session>
 {
 public:
   session(tcp::socket socket)
-    : socket_(std::move(socket))
-  {
-  }
+      : socket_(std::move(socket)) {}
 
   void start()
   {
@@ -78,65 +54,101 @@ private:
   {
     auto self(shared_from_this());
     boost::asio::async_read_until(socket_, buffer_, "\r\n",
-        [this, self](boost::system::error_code ec, std::size_t length)
-        {
-          if (!ec)
-          {
-            std::istream is(&buffer_);
-            std::string message(std::istreambuf_iterator<char>(is), {});
-            std::cout << "Received: " << message << std::endl;
+                                  [this, self](boost::system::error_code ec, std::size_t length)
+                                  {
+                                    if (!ec)
+                                    {
+                                      std::istream is(&buffer_);
+                                      std::string message(std::istreambuf_iterator<char>(is), {});
+                                      std::cout << "Received: " << message << std::endl;
 
-             std::vector<std::string> splitedMessage;
-            boost::algorithm::split(splitedMessage, message, boost::is_any_of("|"));
+                                      std::vector<std::string> splitedMessage;
+                                      boost::algorithm::split(splitedMessage, message, boost::is_any_of("|"));
 
-            std::string messageType = splitedMessage[0];
-            std::string sensor_id = splitedMessage[1];
-            std::string filepath = sensor_id + ".txt";
-            std::string timeDate = splitedMessage[2];
-            std::string data = splitedMessage[3];
+                                      if (splitedMessage.size() < 2)
+                                      {
+                                        std::cerr << "Invalid message format\n";
+                                        return;
+                                      }
 
-            // write_message(message);
- 
-            if (messageType == "LOG") {
-              std::fstream file(filepath, std::fstream::out | std::fstream::in | std::fstream::binary 
-																	 | std::fstream::app); 
-              if (file.is_open()) {
+                                      std::string messageType = splitedMessage[0];
+                                      std::string sensor_id = splitedMessage[1];
+                                      std::string file_path = sensor_id + ".log";
 
-		            // Recupera o número de registros presentes no arquivo
+                                      if (messageType == "LOG")
+                                      {
+                                        std::string timeDate = splitedMessage[2];
+                                        std::string data = splitedMessage[3];
+                                        std::ofstream file(file_path, std::ios::binary | std::ios::app);
 
-		            // Escreve o registro no arquivo
-		            std::cout << "Escrevendo o registro..." << std::endl;
+                                        if (file.is_open())
+                                        {
+                                          LogRecord rec;
+                                          std::strncpy(rec.sensor_id, sensor_id.c_str(), sizeof(rec.sensor_id));
+                                          rec.timestamp = string_to_time_t(timeDate);
+                                          rec.value = std::stof(data);
 
-			          LogRecord rec;
-			          rec.sensor_id = sensor_id;
-                rec.timestamp = string_to_time_t(timeDate);
-                rec.value = std::stof(data);
-			          file.write((char*)&rec, sizeof(LogRecord));
-                std::cout << "Registro escrito" << std::endl; 
-
-                // LogRecord recRead;
-                // file.read((char*)&recRead, sizeof(LogRecord));
-                // std::cout << "Registro lido: id) " << recRead.sensor_id << " valor) " << recRead.value << std::endl; 
-                // std::cout << time_t_to_string(recRead.timestamp) << std::endl;
-              }
-            }
-          }
-        });
+                                          file.write((char *)&rec, sizeof(LogRecord));
+                                          file.close();
+                                        }
+                                      }
+                                      else if (messageType == "GET")
+                                      {
+                                        std::string num_records_str = splitedMessage[2];
+                                        int num_records = std::stoi(num_records_str);
+                                        std::string response = get_records(file_path, num_records);
+                                        write_message(response);
+                                      }
+                                      write_message(message);
+                                    }
+                                  });
   }
 
-  void write_message(const std::string& message)
+  void write_message(const std::string &message)
   {
     auto self(shared_from_this());
     boost::asio::async_write(socket_, boost::asio::buffer(message),
-        [this, self, message](boost::system::error_code ec, std::size_t /*length*/)
-        {
-          if (!ec)
-          {
-            read_message();
-          }
-        });
+                             [this, self, message](boost::system::error_code ec, std::size_t /*length*/)
+                             {
+                               if (!ec)
+                               {
+                                 read_message();
+                               }
+                             });
   }
 
+  std::string get_records(const std::string file_path, int num_records)
+  {
+    std::ifstream file(file_path, std::ios::binary);
+    if (!file.is_open())
+    {
+      return "ERROR|INVALID_SENSOR_ID\r\n";
+    }
+
+    std::vector<LogRecord> records;
+    LogRecord rec;
+    while (file.read(reinterpret_cast<char *>(&rec), sizeof(LogRecord)))
+    {
+      records.push_back(rec);
+    }
+    file.close();
+
+    int record_size = records.size();
+
+    if (num_records > record_size)
+    {
+      num_records = record_size;
+    }
+
+    std::string response = std::to_string(num_records) + ";";
+    for (int i = record_size - num_records; i < record_size; ++i)
+    {
+      response += time_t_to_string(records[i].timestamp) + "|" + std::to_string(records[i].value) + ";";
+    }
+    response.pop_back(); // Remove o último ponto e vírgula
+    response += "\r\n";
+    return response;
+  }
   tcp::socket socket_;
   boost::asio::streambuf buffer_;
 };
@@ -144,8 +156,8 @@ private:
 class server
 {
 public:
-  server(boost::asio::io_context& io_context, short port)
-    : acceptor_(io_context, tcp::endpoint(tcp::v4(), port))
+  server(boost::asio::io_context &io_context, short port)
+      : acceptor_(io_context, tcp::endpoint(tcp::v4(), port))
   {
     accept();
   }
@@ -168,7 +180,7 @@ private:
   tcp::acceptor acceptor_;
 };
 
-int main(int argc, char* argv[])
+int main(int argc, char *argv[])
 {
   if (argc != 2)
   {
